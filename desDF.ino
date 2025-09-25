@@ -50,6 +50,10 @@ const unsigned long countInterval = 1000; // 1 sec interval
 bool waitingForAnswer = false;
 bool answerInProgress = false;
 
+// ---------------- States ----------------
+enum State { IDLE, QUESTION, DISPENSER };
+State currentState = IDLE;
+
 // ---------------- Setup ----------------
 void setup() {
   for (int i = 0; i < NUM_BUTTONS; ++i) {
@@ -58,12 +62,8 @@ void setup() {
     lastDebounceTime[i] = 0;
   }
 
-  pinMode(segA, OUTPUT);
-  pinMode(segB, OUTPUT);
-  pinMode(segC, OUTPUT);
-  pinMode(segD, OUTPUT);
-  pinMode(segE, OUTPUT);
-  pinMode(segF, OUTPUT);
+  pinMode(segA, OUTPUT); pinMode(segB, OUTPUT); pinMode(segC, OUTPUT);
+  pinMode(segD, OUTPUT); pinMode(segE, OUTPUT); pinMode(segF, OUTPUT);
   pinMode(segG, OUTPUT);
 
   mySoftwareSerial.begin(9600);
@@ -79,27 +79,42 @@ void setup() {
 
   // show 0 at startup
   displayNumber(0);
-
-  // start with first question
-  playQuestion(currentQuestion);
 }
 
 // ---------------- Main loop ----------------
 void loop() {
   pollButtons(false);
 
-  if (!secretPlaying && waitingForAnswer && !answerInProgress) {
-    // Countdown logic
-    if (millis() - lastCountMillis >= countInterval) {
-      lastCountMillis = millis();
-      displayNumber(countdown);
-      countdown--;
-      if (countdown < 0) {
-        // time up, repeat question
-        Serial.println(F("Time up! Repeating question."));
+  switch(currentState) {
+    case IDLE:
+      displayNumber(0);
+      if (anyButtonPressed()) {
+        currentState = QUESTION;
         playQuestion(currentQuestion);
       }
-    }
+      break;
+
+    case QUESTION:
+      // countdown logic
+      if (!secretPlaying && waitingForAnswer && !answerInProgress) {
+        if (millis() - lastCountMillis >= countInterval) {
+          lastCountMillis = millis();
+          displayNumber(countdown);
+          countdown--;
+          if (countdown < 0) {
+            Serial.println(F("Time up! Repeating question."));
+            playQuestion(currentQuestion);
+          }
+        }
+      }
+      break;
+
+    case DISPENSER:
+      // placeholder for servo integration
+      Serial.println(F("DISPENSER STATE: Activate servo here"));
+      delay(2000);
+      currentState = IDLE;
+      break;
   }
 }
 
@@ -135,11 +150,15 @@ void onButtonPress(int pin) {
     return;
   }
 
-  if (waitingForAnswer) {
-    waitingForAnswer = false; // stop countdown
+  // Exit idle if needed
+  if (currentState == IDLE) {
+    currentState = QUESTION;
+    playQuestion(currentQuestion);
+    return;
   }
 
-  // Normal behavior
+  if (waitingForAnswer) waitingForAnswer = false;
+
   if (pin == nextButton) {
     currentQuestion++;
     if (currentQuestion > totalQuestions) currentQuestion = 1;
@@ -153,12 +172,12 @@ void onButtonPress(int pin) {
   else if (pin == trueButton) {
     displayTF('T');
     playAnswer(currentQuestion, false);
-    moveToNextQuestion();
+    currentState = DISPENSER; // move to dispenser after false answer
   }
   else if (pin == falseButton) {
     displayTF('F');
     playAnswer(currentQuestion, true);
-    moveToNextQuestion();
+    currentState = DISPENSER; // move to dispenser after correct answer
   }
 }
 
@@ -172,14 +191,9 @@ void registerSecretPress(int pin) {
     return;
   }
 
-  if (lastSecretPressTime == 0 || (now - lastSecretPressTime) > maxGap) {
-    secretCount = 0;
-  }
+  if (lastSecretPressTime == 0 || (now - lastSecretPressTime) > maxGap) secretCount = 0;
   lastSecretPressTime = now;
   secretCount++;
-
-  Serial.print(F("Secret false-press count: "));
-  Serial.println(secretCount);
 
   if (secretCount >= secretCountRequired) {
     Serial.println(F("Secret code matched! Entering secret mode..."));
@@ -214,21 +228,21 @@ void handleSecretButtons(int pin) {
     myDFPlayer.stop();
     secretPlaying = false;
     secretPaused = false;
+    currentState = QUESTION;
     playQuestion(currentQuestion);
   }
 }
 
-// ---------------- Wait helper that still detects secret presses ----------------
+// ---------------- Wait helper ----------------
 bool waitWithSecretCheck(unsigned long durationMs) {
   unsigned long start = millis();
   while (millis() - start < durationMs) {
-    pollButtons(true); // only check secret presses while waiting
-    if (secretPlaying) return false; // secret started, abort wait
+    pollButtons(true);
+    if (secretPlaying) return false;
     delay(20);
   }
   return true;
 }
-
 
 // ---------------- Play question/answer ----------------
 void playQuestion(int qNum) {
@@ -240,10 +254,10 @@ void playQuestion(int qNum) {
 
   myDFPlayer.playFolder(1, qNum);
 
-  // start countdown
   countdown = 5;
   lastCountMillis = millis();
   waitingForAnswer = true;
+  displayNumber(countdown);
 }
 
 void playAnswer(int qNum, bool isCorrect) {
@@ -264,13 +278,6 @@ void playAnswer(int qNum, bool isCorrect) {
   waitWithSecretCheck(2500);
 
   answerInProgress = false;
-}
-
-// ---------------- Automatically move to next question ----------------
-void moveToNextQuestion() {
-  currentQuestion++;
-  if (currentQuestion > totalQuestions) currentQuestion = 1;
-  playQuestion(currentQuestion);
 }
 
 // ---------------- 7-segment helpers ----------------
@@ -302,6 +309,15 @@ void displayTF(char letter) {
   digitalWrite(segA,a); digitalWrite(segB,b); digitalWrite(segC,c);
   digitalWrite(segD,d); digitalWrite(segE,e); digitalWrite(segF,f); digitalWrite(segG,g);
 }
+
+// ---------------- Any button pressed helper ----------------
+bool anyButtonPressed() {
+  for (int i = 0; i < NUM_BUTTONS; i++) {
+    if (digitalRead(BUTTONS[i]) == LOW) return true;
+  }
+  return false;
+}
+
 
 
 
