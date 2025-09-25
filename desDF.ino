@@ -7,6 +7,15 @@ const int nextButton  = 3;
 const int trueButton  = 4;
 const int falseButton = 5;
 
+// 7-segment pins
+const int segA = 6;
+const int segB = 7;
+const int segC = 8;
+const int segD = 9;
+const int segE = 12;
+const int segF = 13;
+const int segG = A0;
+
 SoftwareSerial mySoftwareSerial(10, 11);  // RX, TX for DFPlayer
 DFRobotDFPlayerMini myDFPlayer;
 
@@ -14,21 +23,17 @@ DFRobotDFPlayerMini myDFPlayer;
 int currentQuestion = 1;
 const int totalQuestions = 10;
 
-// ---------------- Secret code settings ----------------
-// Secret = 4 consecutive presses of the FALSE button
+// ---------------- Secret code ----------------
 const int secretButton = falseButton;
 const int secretCountRequired = 4;
 int secretCount = 0;
 unsigned long lastSecretPressTime = 0;
-const unsigned long maxGap = 700; // ms allowed between the consecutive presses
+const unsigned long maxGap = 700; // ms
 
-// secret playback tracking
 bool secretPlaying = false;
 unsigned long secretStart = 0;
-int secretTrack = 1;                 // track index within folder 04
-const int totalSecretTracks = 5;     // adjust this to number of files in folder 04
-
-// pause state inside secret
+int secretTrack = 1;
+const int totalSecretTracks = 5;
 bool secretPaused = false;
 
 // ---------------- Button polling / debounce ----------------
@@ -36,7 +41,14 @@ const int NUM_BUTTONS = 4;
 const int BUTTONS[NUM_BUTTONS] = { prevButton, nextButton, trueButton, falseButton };
 int prevState[NUM_BUTTONS];
 unsigned long lastDebounceTime[NUM_BUTTONS];
-const unsigned long debounceMs = 50; // debounce window ms
+const unsigned long debounceMs = 50;
+
+// ---------------- Countdown ----------------
+int countdown = 5;          // 5 seconds countdown
+unsigned long lastCountMillis = 0;
+const unsigned long countInterval = 1000; // 1 sec interval
+bool waitingForAnswer = false;
+bool answerInProgress = false;
 
 // ---------------- Setup ----------------
 void setup() {
@@ -45,6 +57,14 @@ void setup() {
     prevState[i] = digitalRead(BUTTONS[i]);
     lastDebounceTime[i] = 0;
   }
+
+  pinMode(segA, OUTPUT);
+  pinMode(segB, OUTPUT);
+  pinMode(segC, OUTPUT);
+  pinMode(segD, OUTPUT);
+  pinMode(segE, OUTPUT);
+  pinMode(segF, OUTPUT);
+  pinMode(segG, OUTPUT);
 
   mySoftwareSerial.begin(9600);
   Serial.begin(115200);
@@ -57,6 +77,9 @@ void setup() {
   Serial.println(F("DFPlayer Mini ready."));
   myDFPlayer.volume(28);
 
+  // show 0 at startup
+  displayNumber(0);
+
   // start with first question
   playQuestion(currentQuestion);
 }
@@ -64,6 +87,20 @@ void setup() {
 // ---------------- Main loop ----------------
 void loop() {
   pollButtons(false);
+
+  if (!secretPlaying && waitingForAnswer && !answerInProgress) {
+    // Countdown logic
+    if (millis() - lastCountMillis >= countInterval) {
+      lastCountMillis = millis();
+      displayNumber(countdown);
+      countdown--;
+      if (countdown < 0) {
+        // time up, repeat question
+        Serial.println(F("Time up! Repeating question."));
+        playQuestion(currentQuestion);
+      }
+    }
+  }
 }
 
 // ---------------- Poll buttons ----------------
@@ -90,12 +127,16 @@ void pollButtons(bool secretOnly) {
 
 // ---------------- When a button is pressed ----------------
 void onButtonPress(int pin) {
-  // always check secret activation first
+  // check secret
   registerSecretPress(pin);
 
   if (secretPlaying) {
     handleSecretButtons(pin);
     return;
+  }
+
+  if (waitingForAnswer) {
+    waitingForAnswer = false; // stop countdown
   }
 
   // Normal behavior
@@ -110,10 +151,14 @@ void onButtonPress(int pin) {
     playQuestion(currentQuestion);
   }
   else if (pin == trueButton) {
-    playAnswer(currentQuestion, false);  // incorrect
+    displayTF('T');
+    playAnswer(currentQuestion, false);
+    moveToNextQuestion();
   }
   else if (pin == falseButton) {
-    playAnswer(currentQuestion, true);   // correct
+    displayTF('F');
+    playAnswer(currentQuestion, true);
+    moveToNextQuestion();
   }
 }
 
@@ -139,7 +184,7 @@ void registerSecretPress(int pin) {
   if (secretCount >= secretCountRequired) {
     Serial.println(F("Secret code matched! Entering secret mode..."));
     myDFPlayer.stop();
-    delay(500);
+    delay(50);
     secretTrack = 1;
     myDFPlayer.playFolder(4, secretTrack);
     secretPlaying = true;
@@ -151,46 +196,39 @@ void registerSecretPress(int pin) {
 // ---------------- Handle buttons during secret mode ----------------
 void handleSecretButtons(int pin) {
   if (pin == prevButton) {
-    // Pause/resume
     if (secretPaused) {
-      Serial.println(F("Secret resume"));
       myDFPlayer.start();
       secretPaused = false;
     } else {
-      Serial.println(F("Secret pause"));
       myDFPlayer.pause();
       secretPaused = true;
     }
   }
   else if (pin == nextButton) {
-    // Next track with wrap
     secretTrack++;
     if (secretTrack > totalSecretTracks) secretTrack = 1;
-    Serial.print(F("Secret next track: "));
-    Serial.println(secretTrack);
     myDFPlayer.playFolder(4, secretTrack);
     secretPaused = false;
   }
   else if (pin == trueButton) {
-    // Exit secret mode
-    Serial.println(F("Exiting secret mode..."));
     myDFPlayer.stop();
     secretPlaying = false;
     secretPaused = false;
-    playQuestion(currentQuestion); // resume normal mode
+    playQuestion(currentQuestion);
   }
 }
 
-// ---------------- Wait helper ----------------
+// ---------------- Wait helper that still detects secret presses ----------------
 bool waitWithSecretCheck(unsigned long durationMs) {
   unsigned long start = millis();
   while (millis() - start < durationMs) {
-    pollButtons(true);
-    if (secretPlaying) return false;
+    pollButtons(true); // only check secret presses while waiting
+    if (secretPlaying) return false; // secret started, abort wait
     delay(20);
   }
   return true;
 }
+
 
 // ---------------- Play question/answer ----------------
 void playQuestion(int qNum) {
@@ -198,25 +236,74 @@ void playQuestion(int qNum) {
   Serial.println(qNum);
 
   myDFPlayer.playFolder(3, 1);
-  if (!waitWithSecretCheck(2000)) return;
+  waitWithSecretCheck(2000);
 
   myDFPlayer.playFolder(1, qNum);
+
+  // start countdown
+  countdown = 5;
+  lastCountMillis = millis();
+  waitingForAnswer = true;
 }
 
 void playAnswer(int qNum, bool isCorrect) {
-  Serial.print(F("Playing Answer for Q"));
-  Serial.println(qNum);
+  answerInProgress = true;
 
   if (isCorrect) {
     myDFPlayer.playFolder(3, 2);
-    if (!waitWithSecretCheck(2500)) return;
+    waitWithSecretCheck(2500);
   } else {
     myDFPlayer.playFolder(3, 3);
-    if (!waitWithSecretCheck(4500)) return;
+    waitWithSecretCheck(4500);
   }
 
   myDFPlayer.playFolder(2, qNum);
-  if (!waitWithSecretCheck(9500)) return;
+  waitWithSecretCheck(9500);
+
+  myDFPlayer.playFolder(3, 4);
+  waitWithSecretCheck(2500);
+
+  answerInProgress = false;
 }
+
+// ---------------- Automatically move to next question ----------------
+void moveToNextQuestion() {
+  currentQuestion++;
+  if (currentQuestion > totalQuestions) currentQuestion = 1;
+  playQuestion(currentQuestion);
+}
+
+// ---------------- 7-segment helpers ----------------
+void displayNumber(int num) {
+  bool a,b,c,d,e,f,g;
+  a=b=c=d=e=f=g=false;
+
+  switch(num) {
+    case 5: a=true;b=false;c=true;d=true;e=false;f=true;g=true; break;
+    case 4: a=false;b=true;c=true;d=false;e=false;f=true;g=true; break;
+    case 3: a=true;b=true;c=true;d=true;e=false;f=false;g=true; break;
+    case 2: a=true;b=true;c=false;d=true;e=true;f=false;g=true; break;
+    case 1: a=false;b=true;c=true;d=false;e=false;f=false;g=false; break;
+    case 0: a=true;b=true;c=true;d=true;e=true;f=true;g=false; break;
+  }
+
+  digitalWrite(segA,a); digitalWrite(segB,b); digitalWrite(segC,c);
+  digitalWrite(segD,d); digitalWrite(segE,e); digitalWrite(segF,f); digitalWrite(segG,g);
+}
+
+void displayTF(char letter) {
+  bool a=false,b=false,c=false,d=false,e=false,f=false,g=false;
+
+  switch(letter) {
+    case 'T': f=true;e=true;g=true; break;
+    case 'F': a=true;f=true;e=true;g=true; break;
+  }
+
+  digitalWrite(segA,a); digitalWrite(segB,b); digitalWrite(segC,c);
+  digitalWrite(segD,d); digitalWrite(segE,e); digitalWrite(segF,f); digitalWrite(segG,g);
+}
+
+
+
 
 
