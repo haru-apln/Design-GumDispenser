@@ -1,7 +1,7 @@
 #include "SoftwareSerial.h"
 #include "DFRobotDFPlayerMini.h"
 #include "Servo.h"
-#include <EEPROM.h>  // added for memory
+#include <EEPROM.h>
 
 // ---------------- Hardware pins ----------------
 const int prevButton  = 2;
@@ -32,7 +32,7 @@ const int servoEEPROMAddr = 0;
 // ---------------- Playback / questions ----------------
 int currentQuestion = 1;
 const int totalQuestions = 10;
-bool questionCompleted[totalQuestions + 1]; // index 1..totalQuestions
+bool questionCompleted[totalQuestions + 1]; 
 
 // ---------------- Secret code ----------------
 const int secretButton = falseButton;
@@ -57,7 +57,7 @@ const unsigned long debounceMs = 50;
 // ---------------- Countdown ----------------
 int countdown = 5;          
 unsigned long lastCountMillis = 0;
-const unsigned long countInterval = 1000; // 1 sec interval
+const unsigned long countInterval = 1000;
 bool waitingForAnswer = false;
 bool answerInProgress = false;
 
@@ -104,15 +104,12 @@ void setup() {
   Serial.println(F("DFPlayer Mini ready."));
   myDFPlayer.volume(28);
 
-  // show 0 at startup
   displayNumber(0);
 
-  // initialize question completion status
   for (int i = 1; i <= totalQuestions; i++) {
     questionCompleted[i] = false;
   }
 
-  // initialize servo with EEPROM memory
   initServo();
 }
 
@@ -142,10 +139,10 @@ void moveServoSmooth(int startAngle, int endAngle, int stepDelay) {
 // ---------------- Dispense gum ----------------
 void dispenseGum() {
   int currentPos = dispenserServo.read();
-  int targetPos = (currentPos == 0) ? 180 : 0; // move to opposite angle
+  int targetPos = (currentPos == 0) ? 180 : 0; 
   moveServoSmooth(currentPos, targetPos, 10);
-  delay(2000); // hold for 2 seconds
-  EEPROM.update(servoEEPROMAddr, targetPos); // save last position
+  delay(2000);
+  EEPROM.update(servoEEPROMAddr, targetPos); 
 }
 
 // ---------------- Main loop ----------------
@@ -169,7 +166,7 @@ void loop() {
           countdown--;
           if (countdown < 0) {
             waitingForAnswer = false;
-            myDFPlayer.playFolder(3, 5); // "try again"
+            myDFPlayer.playFolder(3, 5);
             waitWithSecretCheck(2500);    
             displayNumber(0);
             currentState = IDLE;
@@ -268,13 +265,13 @@ void onButtonPress(int pin) {
     displayTF('T');
     playAnswer(currentQuestion, false);
     displayNumber(0);
-    currentState = IDLE; // servo stays at last position
+    currentState = IDLE;
   }
   else if (pin == falseButton) {
     displayTF('F');
     playAnswer(currentQuestion, true);
     questionCompleted[currentQuestion] = true;
-    currentState = DISPENSER; // servo moves on false answer
+    currentState = DISPENSER; 
   }
 }
 
