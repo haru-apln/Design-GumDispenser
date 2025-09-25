@@ -1,5 +1,6 @@
 #include "SoftwareSerial.h"
 #include "DFRobotDFPlayerMini.h"
+#include "Servo.h"
 
 // ---------------- Hardware pins ----------------
 const int prevButton  = 2;
@@ -16,8 +17,13 @@ const int segE = 12;
 const int segF = 13;
 const int segG = A0;
 
+// Servo pin
+const int servoPin = A1;
+
+// ---------------- Objects ----------------
 SoftwareSerial mySoftwareSerial(10, 11);  // RX, TX for DFPlayer
 DFRobotDFPlayerMini myDFPlayer;
+Servo dispenserServo;
 
 // ---------------- Playback / questions ----------------
 int currentQuestion = 1;
@@ -44,7 +50,7 @@ unsigned long lastDebounceTime[NUM_BUTTONS];
 const unsigned long debounceMs = 50;
 
 // ---------------- Countdown ----------------
-int countdown = 5;          // 5 seconds countdown
+int countdown = 5;          
 unsigned long lastCountMillis = 0;
 const unsigned long countInterval = 1000; // 1 sec interval
 bool waitingForAnswer = false;
@@ -53,6 +59,18 @@ bool answerInProgress = false;
 // ---------------- States ----------------
 enum State { IDLE, QUESTION, DISPENSER };
 State currentState = IDLE;
+
+// ---------------- Function prototypes ----------------
+void pollButtons(bool secretOnly);
+void onButtonPress(int pin);
+void registerSecretPress(int pin);
+void handleSecretButtons(int pin);
+bool waitWithSecretCheck(unsigned long durationMs);
+void playQuestion(int qNum);
+void playAnswer(int qNum, bool isCorrect);
+void displayNumber(int num);
+void displayTF(char letter);
+bool anyButtonPressed();
 
 // ---------------- Setup ----------------
 void setup() {
@@ -65,6 +83,9 @@ void setup() {
   pinMode(segA, OUTPUT); pinMode(segB, OUTPUT); pinMode(segC, OUTPUT);
   pinMode(segD, OUTPUT); pinMode(segE, OUTPUT); pinMode(segF, OUTPUT);
   pinMode(segG, OUTPUT);
+
+  dispenserServo.attach(servoPin);
+  dispenserServo.write(0); // start at 0°
 
   mySoftwareSerial.begin(9600);
   Serial.begin(115200);
@@ -81,6 +102,21 @@ void setup() {
   displayNumber(0);
 }
 
+// ---------------- Smooth servo movement ----------------
+void moveServoSmooth(int startAngle, int endAngle, int stepDelay = 10) {
+  if (startAngle < endAngle) {
+    for (int pos = startAngle; pos <= endAngle; pos++) {
+      dispenserServo.write(pos);
+      delay(stepDelay);
+    }
+  } else {
+    for (int pos = startAngle; pos >= endAngle; pos--) {
+      dispenserServo.write(pos);
+      delay(stepDelay);
+    }
+  }
+}
+
 // ---------------- Main loop ----------------
 void loop() {
   pollButtons(false);
@@ -88,6 +124,7 @@ void loop() {
   switch(currentState) {
     case IDLE:
       displayNumber(0);
+      moveServoSmooth(dispenserServo.read(), 0); // reset servo to 0 smoothly
       if (anyButtonPressed()) {
         currentState = QUESTION;
         playQuestion(currentQuestion);
@@ -102,21 +139,28 @@ void loop() {
           displayNumber(countdown);
           countdown--;
           if (countdown < 0) {
-            Serial.println(F("Time up! Repeating question."));
-            playQuestion(currentQuestion);
+            Serial.println(F("Time up! Playing 'try again' and returning to idle."));
+            waitingForAnswer = false;
+            myDFPlayer.playFolder(3, 5); // play "try again"
+            waitWithSecretCheck(2500);    
+            displayNumber(0);
+            currentState = IDLE;
           }
         }
       }
       break;
 
     case DISPENSER:
-      // placeholder for servo integration
-      Serial.println(F("DISPENSER STATE: Activate servo here"));
-      delay(2000);
+      Serial.println(F("DISPENSER STATE: Activating servo smoothly"));
+      moveServoSmooth(0, 180, 10); // rotate smoothly to 180°
+      delay(2000);                  // keep open for 2 seconds
+      moveServoSmooth(180, 0, 10); // return smoothly to 0°
+      displayNumber(0);
       currentState = IDLE;
       break;
   }
 }
+
 
 // ---------------- Poll buttons ----------------
 void pollButtons(bool secretOnly) {
@@ -142,7 +186,6 @@ void pollButtons(bool secretOnly) {
 
 // ---------------- When a button is pressed ----------------
 void onButtonPress(int pin) {
-  // check secret
   registerSecretPress(pin);
 
   if (secretPlaying) {
@@ -150,7 +193,6 @@ void onButtonPress(int pin) {
     return;
   }
 
-  // Exit idle if needed
   if (currentState == IDLE) {
     currentState = QUESTION;
     playQuestion(currentQuestion);
@@ -172,12 +214,13 @@ void onButtonPress(int pin) {
   else if (pin == trueButton) {
     displayTF('T');
     playAnswer(currentQuestion, false);
-    currentState = DISPENSER; // move to dispenser after false answer
+    displayNumber(0);
+    currentState = IDLE;
   }
   else if (pin == falseButton) {
     displayTF('F');
     playAnswer(currentQuestion, true);
-    currentState = DISPENSER; // move to dispenser after correct answer
+    currentState = DISPENSER; // move to dispenser after false answer
   }
 }
 
@@ -317,9 +360,5 @@ bool anyButtonPressed() {
   }
   return false;
 }
-
-
-
-
 
 
