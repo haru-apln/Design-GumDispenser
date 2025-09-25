@@ -1,6 +1,7 @@
 #include "SoftwareSerial.h"
 #include "DFRobotDFPlayerMini.h"
 #include "Servo.h"
+#include <EEPROM.h>  // added for memory
 
 // ---------------- Hardware pins ----------------
 const int prevButton  = 2;
@@ -25,9 +26,13 @@ SoftwareSerial mySoftwareSerial(10, 11);  // RX, TX for DFPlayer
 DFRobotDFPlayerMini myDFPlayer;
 Servo dispenserServo;
 
+// EEPROM address for last servo position
+const int servoEEPROMAddr = 0;
+
 // ---------------- Playback / questions ----------------
 int currentQuestion = 1;
 const int totalQuestions = 10;
+bool questionCompleted[totalQuestions + 1]; // index 1..totalQuestions
 
 // ---------------- Secret code ----------------
 const int secretButton = falseButton;
@@ -68,9 +73,13 @@ void handleSecretButtons(int pin);
 bool waitWithSecretCheck(unsigned long durationMs);
 void playQuestion(int qNum);
 void playAnswer(int qNum, bool isCorrect);
+void moveToNextQuestion();
 void displayNumber(int num);
 void displayTF(char letter);
 bool anyButtonPressed();
+void initServo();
+void moveServoSmooth(int startAngle, int endAngle, int stepDelay = 10);
+void dispenseGum();
 
 // ---------------- Setup ----------------
 void setup() {
@@ -83,9 +92,6 @@ void setup() {
   pinMode(segA, OUTPUT); pinMode(segB, OUTPUT); pinMode(segC, OUTPUT);
   pinMode(segD, OUTPUT); pinMode(segE, OUTPUT); pinMode(segF, OUTPUT);
   pinMode(segG, OUTPUT);
-
-  dispenserServo.attach(servoPin);
-  dispenserServo.write(0); // start at 0°
 
   mySoftwareSerial.begin(9600);
   Serial.begin(115200);
@@ -100,10 +106,26 @@ void setup() {
 
   // show 0 at startup
   displayNumber(0);
+
+  // initialize question completion status
+  for (int i = 1; i <= totalQuestions; i++) {
+    questionCompleted[i] = false;
+  }
+
+  // initialize servo with EEPROM memory
+  initServo();
+}
+
+// ---------------- Servo initialization ----------------
+void initServo() {
+  dispenserServo.attach(servoPin);
+  int lastPos = EEPROM.read(servoEEPROMAddr);
+  if (lastPos < 0 || lastPos > 180) lastPos = 0;
+  dispenserServo.write(lastPos);
 }
 
 // ---------------- Smooth servo movement ----------------
-void moveServoSmooth(int startAngle, int endAngle, int stepDelay = 10) {
+void moveServoSmooth(int startAngle, int endAngle, int stepDelay) {
   if (startAngle < endAngle) {
     for (int pos = startAngle; pos <= endAngle; pos++) {
       dispenserServo.write(pos);
@@ -117,6 +139,15 @@ void moveServoSmooth(int startAngle, int endAngle, int stepDelay = 10) {
   }
 }
 
+// ---------------- Dispense gum ----------------
+void dispenseGum() {
+  int currentPos = dispenserServo.read();
+  int targetPos = (currentPos == 0) ? 180 : 0; // move to opposite angle
+  moveServoSmooth(currentPos, targetPos, 10);
+  delay(2000); // hold for 2 seconds
+  EEPROM.update(servoEEPROMAddr, targetPos); // save last position
+}
+
 // ---------------- Main loop ----------------
 void loop() {
   pollButtons(false);
@@ -124,7 +155,6 @@ void loop() {
   switch(currentState) {
     case IDLE:
       displayNumber(0);
-      moveServoSmooth(dispenserServo.read(), 0); // reset servo to 0 smoothly
       if (anyButtonPressed()) {
         currentState = QUESTION;
         playQuestion(currentQuestion);
@@ -132,16 +162,14 @@ void loop() {
       break;
 
     case QUESTION:
-      // countdown logic
       if (!secretPlaying && waitingForAnswer && !answerInProgress) {
         if (millis() - lastCountMillis >= countInterval) {
           lastCountMillis = millis();
           displayNumber(countdown);
           countdown--;
           if (countdown < 0) {
-            Serial.println(F("Time up! Playing 'try again' and returning to idle."));
             waitingForAnswer = false;
-            myDFPlayer.playFolder(3, 5); // play "try again"
+            myDFPlayer.playFolder(3, 5); // "try again"
             waitWithSecretCheck(2500);    
             displayNumber(0);
             currentState = IDLE;
@@ -151,16 +179,41 @@ void loop() {
       break;
 
     case DISPENSER:
-      Serial.println(F("DISPENSER STATE: Activating servo smoothly"));
-      moveServoSmooth(0, 180, 10); // rotate smoothly to 180°
-      delay(2000);                  // keep open for 2 seconds
-      moveServoSmooth(180, 0, 10); // return smoothly to 0°
+      Serial.println(F("DISPENSER STATE: Activating servo"));
+      dispenseGum();
       displayNumber(0);
+      moveToNextQuestion(); 
       currentState = IDLE;
       break;
   }
 }
 
+// ---------------- Move to next question ----------------
+void moveToNextQuestion() {
+  int next = currentQuestion + 1;
+  if (next > totalQuestions) next = 1;
+
+  bool allCompleted = true;
+  for (int i = 1; i <= totalQuestions; i++) {
+    if (!questionCompleted[i]) {
+      allCompleted = false;
+      break;
+    }
+  }
+
+  if (allCompleted) {
+    for (int i = 1; i <= totalQuestions; i++) {
+      questionCompleted[i] = false;
+    }
+  }
+
+  while (questionCompleted[next]) {
+    next++;
+    if (next > totalQuestions) next = 1;
+    if (next == currentQuestion) break;
+  }
+  currentQuestion = next;
+}
 
 // ---------------- Poll buttons ----------------
 void pollButtons(bool secretOnly) {
@@ -215,12 +268,13 @@ void onButtonPress(int pin) {
     displayTF('T');
     playAnswer(currentQuestion, false);
     displayNumber(0);
-    currentState = IDLE;
+    currentState = IDLE; // servo stays at last position
   }
   else if (pin == falseButton) {
     displayTF('F');
     playAnswer(currentQuestion, true);
-    currentState = DISPENSER; // move to dispenser after false answer
+    questionCompleted[currentQuestion] = true;
+    currentState = DISPENSER; // servo moves on false answer
   }
 }
 
@@ -360,5 +414,7 @@ bool anyButtonPressed() {
   }
   return false;
 }
+
+
 
 
